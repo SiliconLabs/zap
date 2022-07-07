@@ -16,8 +16,10 @@
  */
 
 const fs = require('fs')
+const fsp = fs.promises
 const path = require('path')
 const _ = require('lodash')
+const YAML = require('yaml')
 
 const dbApi = require('../db/db-api.js')
 const dbEnum = require('../../src-shared/db-enum.js')
@@ -175,6 +177,7 @@ function gatherFiles(filesArg, options = { suffix: '.zap', doBlank: true }) {
 async function startConvert(argv, options) {
   let files = argv.zapFiles
   let output = argv.output
+  let conversion_results = argv.results
   options.logger(`🤖 Conversion started
     🔍 input files: ${files}
     🔍 output pattern: ${output}`)
@@ -193,62 +196,73 @@ async function startConvert(argv, options) {
     options.logger(`    🐝 templates loaded: ${argv.generationTemplate}`)
   }
 
-  return util
-    .executePromisesSequentially(files, (singlePath, index) =>
-      importJs
-        .importDataFromFile(db, singlePath, {
-          defaultZclMetafile: argv.zclProperties,
-          postImportScript: argv.postImportScript,
-        })
-        .then((importResult) => {
-          return util
-            .initializeSessionPackage(db, importResult.sessionId, {
-              zcl: argv.zclProperties,
-              template: argv.generationTemplate,
+  await util.executePromisesSequentially(files, (singlePath, index) =>
+    importJs
+      .importDataFromFile(db, singlePath, {
+        defaultZclMetafile: argv.zclProperties,
+        postImportScript: argv.postImportScript,
+      })
+      .then((importResult) => {
+        return util
+          .initializeSessionPackage(db, importResult.sessionId, {
+            zcl: argv.zclProperties,
+            template: argv.generationTemplate,
+          })
+          .then(() => {
+            if (argv.postImportScript) {
+              return importJs.executePostImportScript(
+                db,
+                importResult.sessionId,
+                argv.postImportScript
+              )
+            }
+          })
+          .then(() => importResult.sessionId)
+      })
+      .then((sessionId) => {
+        options.logger(`    👈 read in: ${singlePath}`)
+        let of = outputFile(singlePath, output, index)
+        let parent = path.dirname(of)
+        if (!fs.existsSync(parent)) {
+          fs.mkdirSync(parent, { recursive: true })
+        }
+        // Now we need to write the sessionKey for the file path
+        return querySession
+          .updateSessionKeyValue(db, sessionId, dbEnum.sessionKey.filePath, of)
+          .then(() =>
+            exportJs.exportDataIntoFile(db, sessionId, of, {
+              removeLog: argv.noZapFileLog,
+              createBackup: true,
             })
-            .then(() => {
-              if (argv.postImportScript) {
-                return importJs.executePostImportScript(
-                  db,
-                  importResult.sessionId,
-                  argv.postImportScript
-                )
-              }
-            })
-            .then(() => importResult.sessionId)
-        })
-        .then((sessionId) => {
-          options.logger(`    👈 read in: ${singlePath}`)
-          let of = outputFile(singlePath, output, index)
-          let parent = path.dirname(of)
-          if (!fs.existsSync(parent)) {
-            fs.mkdirSync(parent, { recursive: true })
-          }
-          // Now we need to write the sessionKey for the file path
-          return querySession
-            .updateSessionKeyValue(
-              db,
-              sessionId,
-              dbEnum.sessionKey.filePath,
-              of
-            )
-            .then(() =>
-              exportJs.exportDataIntoFile(db, sessionId, of, {
-                removeLog: argv.noZapFileLog,
-                createBackup: true,
-              })
-            )
-        })
-        .then((outputPath) => {
-          options.logger(`    👉 write out: ${outputPath}`)
-        })
+          )
+      })
+      .then((outputPath) => {
+        options.logger(`    👉 write out: ${outputPath}`)
+      })
+  )
+
+  try {
+    await fsp.writeFile(
+      conversion_results,
+      YAML.stringify({
+        upgrade_results: [
+          {
+            message:
+              'Zigbee Cluster Configurator configuration has been successfully upgraded.',
+            status: 'automatic',
+          },
+        ],
+      })
     )
-    .then(() => {
-      options.logger('😎 Conversion done!')
-      if (options.quitFunction != null) {
-        options.quitFunction()
-      }
-    })
+    options.logger(`    👉 write out: ${conversion_results}`)
+  } catch (error) {
+    options.logger(`    ⚠️  failed to write out: ${conversion_results}`)
+  }
+
+  options.logger('😎 Conversion done!')
+  if (options.quitFunction != null) {
+    options.quitFunction()
+  }
 }
 
 /**
