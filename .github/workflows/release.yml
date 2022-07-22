@@ -1,6 +1,6 @@
 name: Build and release packages
 
-on: push
+on: [push, workflow_dispatch]
 
 env:
   ZAP_TEST_TIMEOUT: 3600000
