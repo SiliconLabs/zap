@@ -1,3 +1,0 @@
-This template demonstrates the failure case:
-
-{{fail message="this is where the failure lies" }}
